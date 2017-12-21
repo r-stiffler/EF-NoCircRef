@@ -1,0 +1,986 @@
+<#@ template language="C#" debug="false" hostspecific="true"#>
+<#@ assembly name="System.Data.Entity.Design" #>
+<#@import namespace="System.Data.Entity.Design.PluralizationServices" #>
+<#@ include file="EF.Utility.CS.ttinclude"#><#@ 
+ output extension=".cs"#><#
+		
+const string inputFile = @"Model.edmx";
+var textTransform = DynamicTextTransformation.Create(this);
+var code = new CodeGenerationTools(this);
+var ef = new MetadataTools(this);
+var typeMapper = new TypeMapper(code, ef, textTransform.Errors);
+var	fileManager = EntityFrameworkTemplateFileManager.Create(this);
+var loader = new EdmMetadataLoader(textTransform.Host, textTransform.Errors);
+var itemCollection = loader.CreateEdmItemCollection(inputFile);
+var codeStringGenerator = new CodeStringGenerator(code, typeMapper, ef);
+var pluralizer = PluralizationService.CreateService(new CultureInfo("en-us"));
+var schemaByEntitySet = loader.GetDBSchemaByEntitySet(inputFile);
+var storageTypePropertiesByEntity = loader.GetStorageTypePropertyByEntity(inputFile);
+
+var container = itemCollection.OfType<EntityContainer>().FirstOrDefault();
+if (container == null)
+{
+    return string.Empty;
+}
+
+if (!typeMapper.VerifyCaseInsensitiveTypeUniqueness(typeMapper.GetAllGlobalItems(itemCollection), inputFile))
+{
+    return string.Empty;
+}
+
+WriteHeader(codeStringGenerator, fileManager);
+
+foreach (var entity in typeMapper.GetItemsToGenerate<EntityType>(itemCollection))
+{
+    fileManager.StartNewFile(entity.Name + "DBUtils.cs");
+    BeginNamespace(code);
+	var primaryKeyProperty = typeMapper.GetSimpleProperties(entity).FirstOrDefault(edmP => ef.IsKey(edmP));
+	var simpleProperties = typeMapper.GetSimpleProperties(entity).Where(edmP => !ef.IsKey(edmP));
+
+	var schema = schemaByEntitySet.ContainsKey(code.Escape(entity)) ? schemaByEntitySet[code.Escape(entity)] : "";
+	var queryTempTableName = ((schema != "") ? schema + "." : "") + "##temp_" + code.Escape(entity);
+	var currentEntitySetName = container.BaseEntitySets.FirstOrDefault(_=>_.ElementType.Name == code.Escape(entity)).Name;
+
+#>
+<#=codeStringGenerator.UsingDirectives(inHeader: false)#>
+<#=codeStringGenerator.EntityClassOpening(entity)#>
+{
+	#region QUERIES
+	private const string QUERY_InsertIntoTemp = "<#= codeStringGenerator.GetQuery_InsertIntoTemp(queryTempTableName, simpleProperties)#>";
+	private const string QUERY_ValuesToInsertTemplate = "(<#= codeStringGenerator.GetSimplePropertiesForEnumIndexList(simpleProperties) #>)";
+	private const string QUERY_CreateTempDB = "<#= codeStringGenerator.GetQuery_CreateTempDB(queryTempTableName, storageTypePropertiesByEntity[code.Escape(entity)])#>";
+    private const string QUERY_ExecInsertFromTempDB = "<#= codeStringGenerator.GetQuery_ExecInsertFromTempDB(queryTempTableName, simpleProperties, entity) #>";
+	#endregion
+	
+	#region Getter
+    public static IEnumerable<<#=code.Escape(entity)#>> Get<#=pluralizer.Pluralize(code.Escape(entity))#>(<#=code.Escape(container)#> container = null)
+    {
+        bool isContainerCreated = <#=code.Escape(container)#>.InitContainer(ref container);
+
+        IEnumerable<<#=code.Escape(entity)#>> collection = container.<#=pluralizer.Pluralize(code.Escape(entity))#>.ToList();
+
+        if (isContainerCreated)
+        {
+            container.Dispose();
+        }
+
+        return collection;
+    } 
+    #endregion
+
+	#region AddOrUpdate methods
+	public static bool AddOrUpdateEntity(<#=code.Escape(entity)#> <#=code.Escape(entity).ToLower()#>, <#=code.Escape(container)#> container = null)
+    {
+        bool isContainerCreated = false;
+        try
+        {
+            isContainerCreated = <#=code.Escape(container)#>.InitContainer(ref container);
+            container.Entry(<#=code.Escape(entity).ToLower()#>).State = ((<#=code.Escape(entity).ToLower()#>.<#=code.Escape(primaryKeyProperty.Name)#> == default(<#=typeMapper.GetTypeName(primaryKeyProperty.TypeUsage.EdmType)#>))) ? System.Data.Entity.EntityState.Added : System.Data.Entity.EntityState.Modified;
+
+            if (isContainerCreated)
+            {
+                container.SaveChanges();
+                container.Dispose();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (isContainerCreated)
+            {
+                container.Dispose();
+            }
+            return false;
+        }
+    }
+
+    public static bool AddOrUpdateEntities(List<<#=code.Escape(entity)#>> <#=pluralizer.Pluralize(code.Escape(entity)).ToLower()#>, <#=code.Escape(container)#> container = null)
+    {
+        bool isContainerCreated = false;
+        try
+        {
+            isContainerCreated = <#=code.Escape(container)#>.InitContainer(ref container);
+
+			List<<#=code.Escape(entity)#>> entityToAdd = new List<<#=code.Escape(entity)#>>();
+
+            for (int i = 0; i < <#=pluralizer.Pluralize(code.Escape(entity)).ToLower()#>.Count; i++)
+            {
+                if (<#=pluralizer.Pluralize(code.Escape(entity)).ToLower()#>[i].Id == default(<#=typeMapper.GetTypeName(primaryKeyProperty.TypeUsage.EdmType)#>))
+                    entityToAdd.Add(<#=pluralizer.Pluralize(code.Escape(entity)).ToLower()#>[i]);
+                else
+                    container.Entry(<#=pluralizer.Pluralize(code.Escape(entity)).ToLower()#>[i]).State = System.Data.Entity.EntityState.Modified;					
+            }
+
+            container.<#=pluralizer.Pluralize(code.Escape(entity))#>.AddRange(entityToAdd);
+                
+            if (isContainerCreated)
+            {
+                container.SaveChanges();
+                container.Dispose();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (isContainerCreated)
+            {
+                container.Dispose();
+            }
+            return false;
+        }
+    }
+
+	public static bool InsertALotsOf<#=code.Escape(entity)#>(List<<#=code.Escape(entity)#>> entities)
+    {
+        if (entities != null && entities.Count != 0)
+        {
+            using (<#=code.Escape(container)#> context = new <#=code.Escape(container)#>())
+            using (var dbContextTransaction = context.Database.BeginTransaction())
+            {
+                try
+                {
+                    context.Database.ExecuteSqlCommand(QUERY_CreateTempDB);
+                    int seed = 1000;
+                    for (int i = 0; i < entities.Count; i += seed)
+                    {
+                        seed = entities.Count - i;
+                        if (seed >= 1000)
+                            seed = 1000;
+
+                        string transact = string.Format(QUERY_InsertIntoTemp, 
+														string.Join(",", entities.Skip(i).Take(seed)
+																		.Select(_ => string.Format(QUERY_ValuesToInsertTemplate, <#= codeStringGenerator.GetSimplePropertiesForEnumList(simpleProperties, "_.{0}") #>))));
+						context.Database.ExecuteSqlCommand(transact);
+                    }
+
+                    context.Database.ExecuteSqlCommand(QUERY_ExecInsertFromTempDB);
+
+                    dbContextTransaction.Commit();
+                }
+                catch (Exception ex)
+                {
+                    dbContextTransaction.Rollback();
+                    throw ex;
+                }
+            }
+
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+	#endregion
+
+<#
+    var propertiesWithDefaultValues = typeMapper.GetPropertiesWithDefaultValues(entity);
+    var collectionNavigationProperties = typeMapper.GetCollectionNavigationProperties(entity);
+    var complexProperties = typeMapper.GetComplexProperties(entity);
+
+    if (propertiesWithDefaultValues.Any() || collectionNavigationProperties.Any() || complexProperties.Any())
+    {
+#>
+<#
+    }
+
+    //var simpleProperties = typeMapper.GetSimpleProperties(entity);
+    var navigationProperties = typeMapper.GetNavigationProperties(entity);
+
+#>
+}
+<#
+    EndNamespace(code);
+}
+	
+fileManager.Process();
+
+#>
+<#+
+
+public void WriteHeader(CodeStringGenerator codeStringGenerator, EntityFrameworkTemplateFileManager fileManager)
+{
+    fileManager.StartHeader();
+#>
+//------------------------------------------------------------------------------
+// <auto-generated>
+// <#=GetResourceString("Template_GeneratedCodeCommentLine1")#>
+//
+// <#=GetResourceString("Template_GeneratedCodeCommentLine2")#>
+// <#=GetResourceString("Template_GeneratedCodeCommentLine3")#>
+// </auto-generated>
+//------------------------------------------------------------------------------
+<#=codeStringGenerator.UsingDirectives(inHeader: true)#>
+<#+
+    fileManager.EndBlock();
+}
+
+public void BeginNamespace(CodeGenerationTools code)
+{
+    var codeNamespace = code.VsNamespaceSuggestion();
+    if (!String.IsNullOrEmpty(codeNamespace))
+    {
+#>
+namespace <#=code.EscapeNamespace(codeNamespace)#>
+{
+<#+
+        PushIndent("    ");
+    }
+}
+
+public void EndNamespace(CodeGenerationTools code)
+{
+    if (!String.IsNullOrEmpty(code.VsNamespaceSuggestion()))
+    {
+        PopIndent();
+#>
+}
+<#+
+    }
+}
+
+public const string TemplateId = "CSharp_DbContext_Types_EF5";
+
+public class CodeStringGenerator
+{
+    private readonly CodeGenerationTools _code;
+    private readonly TypeMapper _typeMapper;
+    private readonly MetadataTools _ef;
+
+    public CodeStringGenerator(CodeGenerationTools code, TypeMapper typeMapper, MetadataTools ef)
+    {
+        ArgumentNotNull(code, "code");
+        ArgumentNotNull(typeMapper, "typeMapper");
+        ArgumentNotNull(ef, "ef");
+
+        _code = code;
+        _typeMapper = typeMapper;
+        _ef = ef;
+    }
+
+    public string Property(EdmProperty edmProperty)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1} {2} {{ {3}get; {4}set; }}",
+            Accessibility.ForProperty(edmProperty),
+            _typeMapper.GetTypeName(edmProperty.TypeUsage),
+            _code.Escape(edmProperty),
+            _code.SpaceAfter(Accessibility.ForGetter(edmProperty)),
+            _code.SpaceAfter(Accessibility.ForSetter(edmProperty)));
+    }
+
+    public string NavigationProperty(NavigationProperty navigationProperty)
+    {
+        var endType = _typeMapper.GetTypeName(navigationProperty.ToEndMember.GetEntityType());
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1} {2} {{ {3}get; {4}set; }}",
+            AccessibilityAndVirtual(Accessibility.ForProperty(navigationProperty)),
+            navigationProperty.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many ? ("ICollection<" + endType + ">") : endType,
+            _code.Escape(navigationProperty),
+            _code.SpaceAfter(Accessibility.ForGetter(navigationProperty)),
+            _code.SpaceAfter(Accessibility.ForSetter(navigationProperty)));
+    }
+    
+    public string AccessibilityAndVirtual(string accessibility)
+    {
+        return accessibility + (accessibility != "private" ? " virtual" : "");
+    }
+    
+    public string EntityClassOpening(EntityType entity)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "public static partial class {2}DBUtils{3}",
+            Accessibility.ForType(entity),
+            _code.SpaceAfter(_code.AbstractOption(entity)),
+            _code.Escape(entity),
+            _code.StringBefore(" : ", _typeMapper.GetTypeName(entity.BaseType)));
+    }
+    
+    public string EnumOpening(SimpleType enumType)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} enum {1} : {2}",
+            Accessibility.ForType(enumType),
+            _code.Escape(enumType),
+            _code.Escape(_typeMapper.UnderlyingClrType(enumType)));
+        }
+    
+    public void WriteFunctionParameters(EdmFunction edmFunction, Action<string, string, string, string> writeParameter)
+    {
+        var parameters = FunctionImportParameter.Create(edmFunction.Parameters, _code, _ef);
+        foreach (var parameter in parameters.Where(p => p.NeedsLocalVariable))
+        {
+            var isNotNull = parameter.IsNullableOfT ? parameter.FunctionParameterName + ".HasValue" : parameter.FunctionParameterName + " != null";
+            var notNullInit = "new ObjectParameter(\"" + parameter.EsqlParameterName + "\", " + parameter.FunctionParameterName + ")";
+            var nullInit = "new ObjectParameter(\"" + parameter.EsqlParameterName + "\", typeof(" + parameter.RawClrTypeName + "))";
+            writeParameter(parameter.LocalVariableName, isNotNull, notNullInit, nullInit);
+        }
+    }
+    
+    public string ComposableFunctionMethod(EdmFunction edmFunction, string modelNamespace)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} IQueryable<{1}> {2}({3})",
+            AccessibilityAndVirtual(Accessibility.ForMethod(edmFunction)),
+            _typeMapper.GetTypeName(_typeMapper.GetReturnType(edmFunction), modelNamespace),
+            _code.Escape(edmFunction),
+            string.Join(", ", parameters.Select(p => p.FunctionParameterType + " " + p.FunctionParameterName).ToArray()));
+    }
+    
+    public string ComposableCreateQuery(EdmFunction edmFunction, string modelNamespace)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "return ((IObjectContextAdapter)this).ObjectContext.CreateQuery<{0}>(\"[{1}].[{2}]({3})\"{4});",
+            _typeMapper.GetTypeName(_typeMapper.GetReturnType(edmFunction), modelNamespace),
+            edmFunction.NamespaceName,
+            edmFunction.Name,
+            string.Join(", ", parameters.Select(p => "@" + p.EsqlParameterName).ToArray()),
+            _code.StringBefore(", ", string.Join(", ", parameters.Select(p => p.ExecuteParameterName).ToArray())));
+    }
+    
+    public string FunctionMethod(EdmFunction edmFunction, string modelNamespace, bool includeMergeOption)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        var returnType = _typeMapper.GetReturnType(edmFunction);
+
+        var paramList = String.Join(", ", parameters.Select(p => p.FunctionParameterType + " " + p.FunctionParameterName).ToArray());
+        if (includeMergeOption)
+        {
+            paramList = _code.StringAfter(paramList, ", ") + "MergeOption mergeOption";
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} {1} {2}({3})",
+            AccessibilityAndVirtual(Accessibility.ForMethod(edmFunction)),
+            returnType == null ? "int" : "ObjectResult<" + _typeMapper.GetTypeName(returnType, modelNamespace) + ">",
+            _code.Escape(edmFunction),
+            paramList);
+    }
+    
+    public string ExecuteFunction(EdmFunction edmFunction, string modelNamespace, bool includeMergeOption)
+    {
+        var parameters = _typeMapper.GetParameters(edmFunction);
+        var returnType = _typeMapper.GetReturnType(edmFunction);
+
+        var callParams = _code.StringBefore(", ", String.Join(", ", parameters.Select(p => p.ExecuteParameterName).ToArray()));
+        if (includeMergeOption)
+        {
+            callParams = ", mergeOption" + callParams;
+        }
+        
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "return ((IObjectContextAdapter)this).ObjectContext.ExecuteFunction{0}(\"{1}\"{2});",
+            returnType == null ? "" : "<" + _typeMapper.GetTypeName(returnType, modelNamespace) + ">",
+            edmFunction.Name,
+            callParams);
+    }
+    
+    public string DbSet(EntitySet entitySet)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "{0} DbSet<{1}> {2} {{ get; set; }}",
+            Accessibility.ForReadOnlyProperty(entitySet),
+            _typeMapper.GetTypeName(entitySet.ElementType),
+            _code.Escape(entitySet));
+    }
+
+    public string UsingDirectives(bool inHeader, bool includeCollections = true)
+    {
+        return inHeader == string.IsNullOrEmpty(_code.VsNamespaceSuggestion())
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}using System;{1}" +
+                "{2}",
+                inHeader ? Environment.NewLine : "",
+                includeCollections ? (Environment.NewLine + "using System.Collections;"+ Environment.NewLine +"using System.Collections.Generic;"+ Environment.NewLine +"using System.Linq;") : "",
+                inHeader ? "" : Environment.NewLine)
+            : "";
+    }
+	
+	public string GetSimplePropertiesForEnumList(IEnumerable<EdmProperty> properties, string patern)
+    {
+        ArgumentNotNull(properties, "properties");
+		return string.Join(", ", properties.Select(_ => string.Format(patern, _code.Escape(_))));
+    }	
+
+	public string GetSimplePropertiesForEnumIndexList(IEnumerable<EdmProperty> properties)
+    {
+        ArgumentNotNull(properties, "properties");
+		HashSet<string> typesWithApostropheInSQL = new HashSet<string>(){
+			"string",
+			"System.DateTime"
+        };
+		return string.Join(", ", Enumerable.Range(0, properties.Count()).Select(_ => string.Format((typesWithApostropheInSQL.Contains(_typeMapper.GetTypeName(properties.ElementAt(_).TypeUsage))) ? "'{{{0}}}'" : "{{{0}}}", _)));
+    }
+	
+	public string GetSimplePropertiesForSQLColumnList(List<LocalStorageProperty> storageProperties)
+    {
+        ArgumentNotNull(storageProperties, "storageProperties");
+        string result = "";
+		var lastProp = storageProperties.LastOrDefault();
+        foreach (var property in storageProperties.Where(_=> !_.IsPrimaryKey))
+        {		 
+			result +="[" + property.Name + "] [" + property.Type + "] " + (property.Nullable ? "" : "NOT ") + "NULL";
+			if(lastProp != null && property != lastProp)
+            {
+				result += ", ";
+			}					
+		}
+		return result;
+    }
+
+	public string GetQuery_ExecInsertFromTempDB(string tempTableName, IEnumerable<EdmProperty> simpleProperties, EntityType entity)
+    {
+		return string.Format(string.Join(" ", new string[] {
+                "IF OBJECT_ID('tempdb.{0}') IS NOT NULL",
+                "BEGIN",
+                    "INSERT INTO {2}({1})",
+                    "SELECT {1}",
+                    "FROM {0}",
+                    "DROP TABLE {0}",
+                "END" }), 
+			tempTableName, GetSimplePropertiesForEnumList(simpleProperties, "{0}"), _code.Escape(entity));
+    }
+
+	public string GetQuery_CreateTempDB(string tempTableName, List<LocalStorageProperty> storageProperties)
+    {
+		return string.Format(string.Join(" ", new string[] {
+                "IF OBJECT_ID('tempdb.{0}') IS NULL",
+                "BEGIN",
+                    "CREATE TABLE {0} ({1})",
+                "END" }), 
+			tempTableName, GetSimplePropertiesForSQLColumnList(storageProperties));
+    }
+
+	public string GetQuery_InsertIntoTemp(string tempTableName, IEnumerable<EdmProperty> simpleProperties)
+    {
+		return "INSERT INTO " + tempTableName + " ("+ GetSimplePropertiesForEnumList(simpleProperties, "[{0}]") + ") VALUES {0}";
+    }
+}
+
+public class TypeMapper
+{
+    private const string ExternalTypeNameAttributeName = @"http://schemas.microsoft.com/ado/2006/04/codegeneration:ExternalTypeName";
+
+    private readonly System.Collections.IList _errors;
+    private readonly CodeGenerationTools _code;
+    private readonly MetadataTools _ef;
+
+    public TypeMapper(CodeGenerationTools code, MetadataTools ef, System.Collections.IList errors)
+    {
+        ArgumentNotNull(code, "code");
+        ArgumentNotNull(ef, "ef");
+        ArgumentNotNull(errors, "errors");
+
+        _code = code;
+        _ef = ef;
+        _errors = errors;
+    }
+
+    public string GetTypeName(TypeUsage typeUsage)
+    {
+        return typeUsage == null ? null : GetTypeName(typeUsage.EdmType, _ef.IsNullable(typeUsage), modelNamespace: null);
+    }
+
+    public string GetTypeName(EdmType edmType)
+    {
+        return GetTypeName(edmType, isNullable: null, modelNamespace: null);
+    }
+
+    public string GetTypeName(TypeUsage typeUsage, string modelNamespace)
+    {
+        return typeUsage == null ? null : GetTypeName(typeUsage.EdmType, _ef.IsNullable(typeUsage), modelNamespace);
+    }
+
+    public string GetTypeName(EdmType edmType, string modelNamespace)
+    {
+        return GetTypeName(edmType, isNullable: null, modelNamespace: modelNamespace);
+    }
+
+    public string GetTypeName(EdmType edmType, bool? isNullable, string modelNamespace)
+    {
+        if (edmType == null)
+        {
+            return null;
+        }
+
+        var collectionType = edmType as CollectionType;
+        if (collectionType != null)
+        {
+            return String.Format(CultureInfo.InvariantCulture, "ICollection<{0}>", GetTypeName(collectionType.TypeUsage, modelNamespace));
+        }
+
+        var typeName = _code.Escape(edmType.MetadataProperties
+                                .Where(p => p.Name == ExternalTypeNameAttributeName)
+                                .Select(p => (string)p.Value)
+                                .FirstOrDefault())
+            ?? (modelNamespace != null && edmType.NamespaceName != modelNamespace ?
+                _code.CreateFullName(_code.EscapeNamespace(edmType.NamespaceName), _code.Escape(edmType)) :
+                _code.Escape(edmType));
+
+        if (edmType is StructuralType)
+        {
+            return typeName;
+        }
+
+        if (edmType is SimpleType)
+        {
+            var clrType = UnderlyingClrType(edmType);
+            if (!IsEnumType(edmType))
+            {
+                typeName = _code.Escape(clrType);
+            }
+
+            return clrType.IsValueType && isNullable == true ?
+                String.Format(CultureInfo.InvariantCulture, "Nullable<{0}>", typeName) :
+                typeName;
+        }
+
+        throw new ArgumentException("edmType");
+    }
+    
+    public Type UnderlyingClrType(EdmType edmType)
+    {
+        ArgumentNotNull(edmType, "edmType");
+
+        var primitiveType = edmType as PrimitiveType;
+        if (primitiveType != null)
+        {
+            return primitiveType.ClrEquivalentType;
+        }
+
+        if (IsEnumType(edmType))
+        {
+            return GetEnumUnderlyingType(edmType).ClrEquivalentType;
+        }
+
+        return typeof(object);
+    }
+    
+    public object GetEnumMemberValue(MetadataItem enumMember)
+    {
+        ArgumentNotNull(enumMember, "enumMember");
+        
+        var valueProperty = enumMember.GetType().GetProperty("Value");
+        return valueProperty == null ? null : valueProperty.GetValue(enumMember, null);
+    }
+    
+    public string GetEnumMemberName(MetadataItem enumMember)
+    {
+        ArgumentNotNull(enumMember, "enumMember");
+        
+        var nameProperty = enumMember.GetType().GetProperty("Name");
+        return nameProperty == null ? null : (string)nameProperty.GetValue(enumMember, null);
+    }
+
+    public System.Collections.IEnumerable GetEnumMembers(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+
+        var membersProperty = enumType.GetType().GetProperty("Members");
+        return membersProperty != null 
+            ? (System.Collections.IEnumerable)membersProperty.GetValue(enumType, null)
+            : Enumerable.Empty<MetadataItem>();
+    }
+    
+    public bool EnumIsFlags(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+        
+        var isFlagsProperty = enumType.GetType().GetProperty("IsFlags");
+        return isFlagsProperty != null && (bool)isFlagsProperty.GetValue(enumType, null);
+    }
+
+    public bool IsEnumType(GlobalItem edmType)
+    {
+        ArgumentNotNull(edmType, "edmType");
+
+        return edmType.GetType().Name == "EnumType";
+    }
+
+    public PrimitiveType GetEnumUnderlyingType(EdmType enumType)
+    {
+        ArgumentNotNull(enumType, "enumType");
+
+        return (PrimitiveType)enumType.GetType().GetProperty("UnderlyingType").GetValue(enumType, null);
+    }
+
+    public string CreateLiteral(object value)
+    {
+        if (value == null || value.GetType() != typeof(TimeSpan))
+        {
+            return _code.CreateLiteral(value);
+        }
+
+        return string.Format(CultureInfo.InvariantCulture, "new TimeSpan({0})", ((TimeSpan)value).Ticks);
+    }
+    
+    public bool VerifyCaseInsensitiveTypeUniqueness(IEnumerable<string> types, string sourceFile)
+    {
+        ArgumentNotNull(types, "types");
+        ArgumentNotNull(sourceFile, "sourceFile");
+        
+        var hash = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+        if (types.Any(item => !hash.Add(item)))
+        {
+            _errors.Add(
+                new CompilerError(sourceFile, -1, -1, "6023",
+                    String.Format(CultureInfo.CurrentCulture, GetResourceString("Template_CaseInsensitiveTypeConflict"))));
+            return false;
+        }
+        return true;
+    }
+    
+    public IEnumerable<SimpleType> GetEnumItemsToGenerate(IEnumerable<GlobalItem> itemCollection)
+    {
+        return GetItemsToGenerate<SimpleType>(itemCollection)
+            .Where(e => IsEnumType(e));
+    }
+    
+    public IEnumerable<T> GetItemsToGenerate<T>(IEnumerable<GlobalItem> itemCollection) where T: EdmType
+    {
+        return itemCollection
+            .OfType<T>()
+            .Where(i => !i.MetadataProperties.Any(p => p.Name == ExternalTypeNameAttributeName))
+            .OrderBy(i => i.Name);
+    }
+
+    public IEnumerable<string> GetAllGlobalItems(IEnumerable<GlobalItem> itemCollection)
+    {
+        return itemCollection
+            .Where(i => i is EntityType || i is ComplexType || i is EntityContainer || IsEnumType(i))
+            .Select(g => GetGlobalItemName(g));
+    }
+
+    public string GetGlobalItemName(GlobalItem item)
+    {
+        if (item is EdmType)
+        {
+            return ((EdmType)item).Name;
+        }
+        else
+        {
+            return ((EntityContainer)item).Name;
+        }
+    }
+
+    public IEnumerable<EdmProperty> GetSimpleProperties(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetSimpleProperties(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetComplexProperties(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is ComplexType && p.DeclaringType == type);
+    }
+    
+    public IEnumerable<EdmProperty> GetComplexProperties(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is ComplexType && p.DeclaringType == type);
+    }
+
+    public IEnumerable<EdmProperty> GetPropertiesWithDefaultValues(EntityType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type && p.DefaultValue != null);
+    }
+    
+    public IEnumerable<EdmProperty> GetPropertiesWithDefaultValues(ComplexType type)
+    {
+        return type.Properties.Where(p => p.TypeUsage.EdmType is SimpleType && p.DeclaringType == type && p.DefaultValue != null);
+    }
+
+    public IEnumerable<NavigationProperty> GetNavigationProperties(EntityType type)
+    {
+        return type.NavigationProperties.Where(np => np.DeclaringType == type);
+    }
+    
+    public IEnumerable<NavigationProperty> GetCollectionNavigationProperties(EntityType type)
+    {
+        return type.NavigationProperties.Where(np => np.DeclaringType == type && np.ToEndMember.RelationshipMultiplicity == RelationshipMultiplicity.Many);
+    }
+    
+    public FunctionParameter GetReturnParameter(EdmFunction edmFunction)
+    {
+        ArgumentNotNull(edmFunction, "edmFunction");
+
+        var returnParamsProperty = edmFunction.GetType().GetProperty("ReturnParameters");
+        return returnParamsProperty == null
+            ? edmFunction.ReturnParameter
+            : ((IEnumerable<FunctionParameter>)returnParamsProperty.GetValue(edmFunction, null)).FirstOrDefault();
+    }
+
+    public bool IsComposable(EdmFunction edmFunction)
+    {
+        ArgumentNotNull(edmFunction, "edmFunction");
+
+        var isComposableProperty = edmFunction.GetType().GetProperty("IsComposableAttribute");
+        return isComposableProperty != null && (bool)isComposableProperty.GetValue(edmFunction, null);
+    }
+
+    public IEnumerable<FunctionImportParameter> GetParameters(EdmFunction edmFunction)
+    {
+        return FunctionImportParameter.Create(edmFunction.Parameters, _code, _ef);
+    }
+
+    public TypeUsage GetReturnType(EdmFunction edmFunction)
+    {
+        var returnParam = GetReturnParameter(edmFunction);
+        return returnParam == null ? null : _ef.GetElementType(returnParam.TypeUsage);
+    }
+    
+    public bool GenerateMergeOptionFunction(EdmFunction edmFunction, bool includeMergeOption)
+    {
+        var returnType = GetReturnType(edmFunction);
+        return !includeMergeOption && returnType != null && returnType.EdmType.BuiltInTypeKind == BuiltInTypeKind.EntityType;
+    }
+}
+
+public class LocalStorageProperty
+{
+    public string Name { get; set; }
+    public string Type { get; set; }
+    public bool Nullable { get; set; }
+    public bool IsPrimaryKey { get; set; }
+}
+
+public class EdmMetadataLoader
+{
+    private readonly IDynamicHost _host;
+    private readonly System.Collections.IList _errors;
+
+    public EdmMetadataLoader (IDynamicHost host, System.Collections.IList errors)
+    {
+        ArgumentNotNull(host, "host");
+        ArgumentNotNull(errors, "errors");
+
+        _host = host;
+        _errors = errors;
+    }
+
+    public IEnumerable<GlobalItem> CreateEdmItemCollection(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        if (!ValidateInputPath(sourcePath))
+        {
+            return new EdmItemCollection();
+        }
+
+        var schemaElement = LoadRootElement(_host.ResolvePath(sourcePath));
+        if (schemaElement != null)
+        {
+            using (var reader = schemaElement.CreateReader())
+            {
+                IList<EdmSchemaError> errors;
+                var itemCollection = MetadataItemCollectionFactory.CreateEdmItemCollection(new[] { reader }, out errors);
+
+                ProcessErrors(errors, sourcePath);
+
+                return itemCollection;
+            }
+        }
+        return new EdmItemCollection();
+    }
+
+	public Dictionary<string, string> GetDBSchemaByEntitySet(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        if (!ValidateInputPath(sourcePath))
+        {
+            return new Dictionary<string, string>();
+        }
+
+        var schemaElement = LoadRootStorageElement(_host.ResolvePath(sourcePath));
+        if (schemaElement != null)
+        {
+			Dictionary<string, string> schemaByEntitySet = new Dictionary<string, string>();
+			var ec = schemaElement.Elements().Where(e => e.Name.LocalName == "EntityContainer").FirstOrDefault();
+			if(ec != null)
+            {
+				foreach(var es in ec.Elements().Where(e => e.Name.LocalName == "EntitySet"))
+				{
+					string name = es.Attribute("Name").Value;
+					string schema = es.Attribute("Schema").Value;
+					schemaByEntitySet.Add(name, schema);
+				}
+            }		
+
+            return schemaByEntitySet;
+        }
+        return new Dictionary<string, string>();
+    }
+
+	public Dictionary<string, List<LocalStorageProperty>> GetStorageTypePropertyByEntity(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        if (!ValidateInputPath(sourcePath))
+        {
+            return new Dictionary<string, List<LocalStorageProperty>>();
+        }
+
+        var schemaElement = LoadRootStorageElement(_host.ResolvePath(sourcePath));
+        if (schemaElement != null)
+        {
+			Dictionary<string, List<LocalStorageProperty>> obj = new Dictionary<string, List<LocalStorageProperty>>();
+ 
+			var entityTypes = schemaElement.Elements().Where(e => e.Name.LocalName == "EntityType");
+			if(entityTypes != null)
+			{
+				foreach(var entityType in entityTypes)
+				{
+					List<LocalStorageProperty> props = new List<LocalStorageProperty>();
+
+					foreach (var property in entityType.Elements().Where(e => e.Name.LocalName == "Property"))
+					{
+						XAttribute nullable = property.Attribute("Nullable");
+						XAttribute isPrimaryKey = property.Attribute("StoreGeneratedPattern");
+						props.Add(new LocalStorageProperty() {                        
+							Name = property.Attribute("Name").Value,
+							Type = property.Attribute("Type").Value,
+							Nullable = bool.Parse( nullable != null ? nullable.Value : "true"),
+							IsPrimaryKey = isPrimaryKey != null
+						});
+
+					}
+					
+					obj.Add(entityType.Attribute("Name").Value, props);
+				}
+			}
+
+            return obj;
+        }
+        return null;
+    }
+
+    public string GetModelNamespace(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        if (!ValidateInputPath(sourcePath))
+        {
+            return string.Empty;
+        }
+
+        var model = LoadRootElement(_host.ResolvePath(sourcePath));
+        if (model == null)
+        {
+            return string.Empty;
+        }
+
+        var attribute = model.Attribute("Namespace");
+        return attribute != null ? attribute.Value : "";
+    }
+
+    private bool ValidateInputPath(string sourcePath)
+    {
+        if (sourcePath == "$" + "edmxInputFile" + "$")
+        {
+            _errors.Add(
+                new CompilerError(_host.TemplateFile ?? sourcePath, 0, 0, string.Empty,
+                    GetResourceString("Template_ReplaceVsItemTemplateToken")));
+            return false;
+        }
+
+        return true;
+    }
+
+    public XElement LoadRootElement(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        var root = XElement.Load(sourcePath, LoadOptions.SetBaseUri | LoadOptions.SetLineInfo);
+        return root.Elements()
+            .Where(e => e.Name.LocalName == "Runtime")
+            .Elements()
+            .Where(e => e.Name.LocalName == "ConceptualModels")
+            .Elements()
+            .Where(e => e.Name.LocalName == "Schema")
+            .FirstOrDefault()
+                ?? root;
+    }
+
+	
+    public XElement LoadRootStorageElement(string sourcePath)
+    {
+        ArgumentNotNull(sourcePath, "sourcePath");
+
+        var root = XElement.Load(sourcePath, LoadOptions.SetBaseUri | LoadOptions.SetLineInfo);
+        return root.Elements()
+            .Where(e => e.Name.LocalName == "Runtime")
+            .Elements()
+            .Where(e => e.Name.LocalName == "StorageModels")
+            .Elements()
+            .Where(e => e.Name.LocalName == "Schema")
+            .FirstOrDefault()
+                ?? root;
+    }
+
+    private void ProcessErrors(IEnumerable<EdmSchemaError> errors, string sourceFilePath)
+    {
+        foreach (var error in errors)
+        {
+            _errors.Add(
+                new CompilerError(
+                    error.SchemaLocation ?? sourceFilePath,
+                    error.Line,
+                    error.Column,
+                    error.ErrorCode.ToString(CultureInfo.InvariantCulture),
+                    error.Message)
+                {
+                    IsWarning = error.Severity == EdmSchemaErrorSeverity.Warning
+                });
+        }
+    }
+    
+    public bool IsLazyLoadingEnabled(EntityContainer container)
+    {
+        string lazyLoadingAttributeValue;
+        var lazyLoadingAttributeName = MetadataConstants.EDM_ANNOTATION_09_02 + ":LazyLoadingEnabled";
+        bool isLazyLoading;
+        return !MetadataTools.TryGetStringMetadataPropertySetting(container, lazyLoadingAttributeName, out lazyLoadingAttributeValue)
+            || !bool.TryParse(lazyLoadingAttributeValue, out isLazyLoading)
+            || isLazyLoading;
+    }
+}
+
+public static void ArgumentNotNull<T>(T arg, string name) where T : class
+{
+    if (arg == null)
+    {
+        throw new ArgumentNullException(name);
+    }
+}
+    
+private static readonly Lazy<System.Resources.ResourceManager> ResourceManager =
+    new Lazy<System.Resources.ResourceManager>(
+        () => new System.Resources.ResourceManager("System.Data.Entity.Design", typeof(MetadataItemCollectionFactory).Assembly), isThreadSafe: true);
+
+public static string GetResourceString(string resourceName)
+{
+    ArgumentNotNull(resourceName, "resourceName");
+
+    return ResourceManager.Value.GetString(resourceName, null);
+}
+#>
