@@ -17,12 +17,12 @@ Copy/paste the content of [ModelName].Context.tt and [ModelName].tt, add new Cod
 ## Prerequisites
 
 * Software
- * Visual Studio 2012 - 2017
- * Entity Framework 5
- * Compatible with EF6
+	* Visual Studio 2012 - 2017
+	* Entity Framework 5
+	* Compatible with EF6
 
 * Components
- * Applicable under .edmx file
+	* Applicable under .edmx file
 
 ![.edmx basic structure](/readme.assets/edmx_structure.png)
 
