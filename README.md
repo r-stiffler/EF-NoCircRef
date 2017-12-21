@@ -24,7 +24,7 @@ Copy/paste the content of [ModelName].Context.tt and [ModelName].tt, add new Cod
 * Components
  * Applicable under .edmx file
 
-!(readme.assets/ADO.NET file.PNG)
+![.edmx basic structure](/readme.assets/ADO.NET file.PNG)
 
 
 ## Next To Come
