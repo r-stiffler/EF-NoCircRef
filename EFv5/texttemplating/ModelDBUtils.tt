@@ -435,7 +435,7 @@ public class CodeStringGenerator
 		var lastProp = storageProperties.LastOrDefault();
         foreach (var property in storageProperties.Where(_=> !_.IsPrimaryKey))
         {		 
-			result +="[" + property.Name + "] [" + property.Type + "] " + (property.Nullable ? "" : "NOT ") + "NULL";
+			result +="[" + property.Name + "] " + property.Type + " " + (property.Nullable ? "" : "NOT ") + "NULL";
 			if(lastProp != null && property != lastProp)
             {
 				result += ", ";
