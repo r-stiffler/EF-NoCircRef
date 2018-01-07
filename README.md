@@ -82,7 +82,7 @@ __2. Use DBUtils__
     ValuesHitDBUtils.InsertALotsOfValuesHit(values);    //here 71ms to insert 2000 rows
     
   ```
-Here is a benchmark to compare __the execution time__ of the two methods:
+Here is a table to compare __the execution time__ of the two methods:
 
 NB Rows to insert | via AddOrUpdateFromEntity | via InsertALotsOf
 --- | --- | ---
