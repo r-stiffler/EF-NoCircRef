@@ -90,4 +90,11 @@ NB Rows to insert | via AddOrUpdateFromEntity | via InsertALotsOf
 20000 | 79885ms (~1min 20s) | 295ms
 100000 | 404116ms (~6min 44s) | 1255ms
 
+### Legal
+Copyright © 2018 Romain Stiffler [https://rstiffler.net](https://rstiffler.net).
+
+This is licensed under the terms of the [MIT license](license.txt).
+
 ### ENJOY !
+
+
