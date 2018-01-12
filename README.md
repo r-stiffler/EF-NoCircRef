@@ -24,7 +24,7 @@ Also, I took this opportunity to add a DBUtils code generation to add the most b
 ## Getting Started
 
 Copy/paste the content of [ModelName].Context.tt and [ModelName].tt, add new Code generation item with the last text templating : [ModelName].tt (with the edmx file open)
-(By convention, I am replacing [ModelName] by the entity model name)
+(I am replacing [ModelName] by the entity model name)
 
 ## How to use
 
@@ -82,7 +82,7 @@ __2. Use DBUtils__
     ValuesHitDBUtils.InsertALotsOfValuesHit(values);    //here 71ms to insert 2000 rows
     
   ```
-Here is a benchmark to compare __the execution time__ of the two methods:
+Here is a table to compare __the execution time__ of the two methods:
 
 NB Rows to insert | via AddOrUpdateFromEntity | via InsertALotsOf
 --- | --- | ---
