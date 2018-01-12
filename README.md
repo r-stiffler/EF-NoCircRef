@@ -91,9 +91,9 @@ NB Rows to insert | via AddOrUpdateFromEntity | via InsertALotsOf
 100000 | 404116ms (~6min 44s) | 1255ms
 
 ### Legal
-Copyright © 2018 Romain Stiffler [https://rstiffler.net](https://rstiffler.net).
+Copyright Â© 2018 Romain Stiffler [https://rstiffler.net](https://rstiffler.net).
 
-This is licensed under the terms of the [MIT license](license.txt).
+This is licensed under the terms of the [MIT license](License.txt).
 
 ### ENJOY !
 
